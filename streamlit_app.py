@@ -1,56 +1,69 @@
 import streamlit as st
-from openai import OpenAI
+from utils import get_answer, text_to_speech, autoplay_audio, speech_to_text
+from audio_recorder_streamlit import audio_recorder
+from streamlit_float import *
+float_init()
 
-# Show title and description.
-st.title("💬 Chatbot")
-st.write(
-    "This is a simple chatbot that uses OpenAI's GPT-3.5 model to generate responses. "
-    "To use this app, you need to provide an OpenAI API key, which you can get [here](https://platform.openai.com/account/api-keys). "
-    "You can also learn how to build this app step by step by [following our tutorial](https://docs.streamlit.io/develop/tutorials/llms/build-conversational-apps)."
-)
-
-# Ask user for their OpenAI API key via `st.text_input`.
-# Alternatively, you can store the API key in `./.streamlit/secrets.toml` and access it
-# via `st.secrets`, see https://docs.streamlit.io/develop/concepts/connections/secrets-management
-openai_api_key = st.text_input("OpenAI API Key", type="password")
-if not openai_api_key:
-    st.info("Please add your OpenAI API key to continue.", icon="🗝️")
-else:
-
-    # Create an OpenAI client.
-    client = OpenAI(api_key=openai_api_key)
-
-    # Create a session state variable to store the chat messages. This ensures that the
-    # messages persist across reruns.
+# Initialize session state for managing chat messages
+def initialize_session_state():
     if "messages" not in st.session_state:
-        st.session_state.messages = []
+        st.session_state.messages = [{"role": "assistant", "content": "Hi! How may I assist you today?"}]
 
-    # Display the existing chat messages via `st.chat_message`.
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+initialize_session_state()
 
-    # Create a chat input field to allow the user to enter a message. This will display
-    # automatically at the bottom of the page.
-    if prompt := st.chat_input("What is up?"):
+st.title("OpenAI Conversational Chatbot")
+footer_container = st.container()
+with footer_container:
+    audio_bytes = audio_recorder()
+if audio_bytes:
+    with st.spinner("Transcribing..."):
+        # Write the audio bytes to a temporary file
+        webm_file_path = "temp_audio.mp3"
+        with open(webm_file_path, "wb") as f:
+            f.write(audio_bytes)
 
-        # Store and display the current prompt.
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+        # Convert the audio to text using the speech_to_text function
+        transcript = speech_to_text(webm_file_path)
+        if transcript:
+            st.session_state.messages.append({"role": "user", "content": transcript})
+            with st.chat_message("user"):
+                st.write(transcript)
+            os.remove(webm_file_path)
+if st.session_state.messages[-1]["role"] != "assistant":
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking🤔..."):
+            final_response = get_answer(st.session_state.messages)
+        with st.spinner("Generating audio response..."):    
+            audio_file = text_to_speech(final_response)
+            autoplay_audio(audio_file)
+        st.write(final_response)
+        st.session_state.messages.append({"role": "assistant", "content": final_response})
+        os.remove(audio_file)
 
-        # Generate a response using the OpenAI API.
-        stream = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state.messages
-            ],
-            stream=True,
+def speech_to_text(audio_data):
+    with open(audio_data, "rb") as audio_file:
+        transcript = client.audio.transcriptions.create(
+            model="whisper-1",
+            response_format="text",
+            file=audio_file
         )
+    return transcript
 
-        # Stream the response to the chat using `st.write_stream`, then store it in 
-        # session state.
-        with st.chat_message("assistant"):
-            response = st.write_stream(stream)
-        st.session_state.messages.append({"role": "assistant", "content": response})
+def text_to_speech(input_text):
+    response = client.audio.speech.create(
+        model="tts-1",
+        voice="nova",
+        input=input_text
+    )
+    webm_file_path = "temp_audio_play.mp3"
+    with open(webm_file_path, "wb") as f:
+        response.stream_to_file(webm_file_path)
+    return webm_file_path
+def get_answer(messages):
+    system_message = [{"role": "system", "content": "You are an helpful AI chatbot, that answers questions asked by User."}]
+    messages = system_message + messages
+    response = client.chat.completions.create(
+        model="gpt-3.5-turbo-1106",
+        messages=messages
+    )
+    return response.choices[0].message.contents
